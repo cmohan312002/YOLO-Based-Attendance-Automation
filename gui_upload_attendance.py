@@ -1,5 +1,6 @@
 import tkinter as tk
-from tkinter import filedialog, ttk, messagebox
+from tkinter import filedialog, ttk, messagebox, simpledialog
+from tkinter import scrolledtext
 from PIL import Image, ImageTk
 import cv2
 from ultralytics import YOLO
@@ -11,40 +12,141 @@ from datetime import datetime
 
 # --------------------------- Configuration ---------------------------
 KNOWN_FACES_DIR = "known_faces"
-YOLO_MODEL_PATH = "yolov8s-face-lindevs.pt"  # use the one you actually have
+YOLO_MODEL_PATH = "yolov8s-face-lindevs.pt"  # change if your file name is different
 ATTENDANCE_FILE = "attendance.csv"
 EMBEDDING_MODEL = "Facenet"
-DISTANCE_THRESHOLD = 1.0   # tune this based on your testing
+DISTANCE_THRESHOLD = 10.5 # tune this based on your tests (0.8–1.2 usually)
 
-# Globals for embeddings
+# Globals
+model = None
 known_embeddings = []
 known_names = []
 
-# --------------------------- Helper Functions ---------------------------
+# GUI globals (will be set later)
+root = None
+upload_btn = None
+register_btn = None
+clear_btn = None
+status_label = None
+progress_bar = None
+log_text = None
+attendance_list = None
+photo_label = None
+
+
+# --------------------------- Utility: Logging ---------------------------
+
+def log(msg: str):
+    """Log message to the text area and console."""
+    print(msg)
+    if log_text is not None:
+        log_text.insert(tk.END, msg + "\n")
+        log_text.see(tk.END)
+
+
+# --------------------------- Attendance File ---------------------------
 
 def init_attendance_file():
-    """Create CSV file if it doesn't exist or is empty."""
-    if not os.path.exists(ATTENDANCE_FILE) or os.stat(ATTENDANCE_FILE).st_size == 0:
-        pd.DataFrame(columns=["Name", "Time"]).to_csv(ATTENDANCE_FILE, index=False)
+    """Create CSV file if it doesn't exist or is empty, with Name/Date/Time columns."""
+    expected_cols = ["Name", "Date", "Time"]
 
+    if not os.path.exists(ATTENDANCE_FILE) or os.stat(ATTENDANCE_FILE).st_size == 0:
+        df = pd.DataFrame(columns=expected_cols)
+        df.to_csv(ATTENDANCE_FILE, index=False)
+        log("[*] Created new attendance file.")
+    else:
+        df = pd.read_csv(ATTENDANCE_FILE)
+
+        # If columns don't match, completely reset file
+        if list(df.columns) != expected_cols:
+            df = pd.DataFrame(columns=expected_cols)
+            df.to_csv(ATTENDANCE_FILE, index=False)
+            log("[!] Existing attendance file had different columns. Reinitialized with Name/Date/Time.")
+
+def mark_attendance(name: str):
+    """Add name to attendance CSV if not already present today."""
+    if not name:
+        return
+
+    df = pd.read_csv(ATTENDANCE_FILE)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Check if this name is already marked today
+    already_today = ((df["Name"] == name) & (df["Date"] == today)).any()
+    if already_today:
+        log(f"[i] {name} is already marked present today ({today}).")
+        return
+
+    now_time = datetime.now().strftime("%H:%M:%S")
+    df.loc[len(df)] = [name, today, now_time]
+    df.to_csv(ATTENDANCE_FILE, index=False)
+    update_attendance_list()
+    log(f"[✔] Attendance marked for {name} on {today} at {now_time}.")
+
+
+def update_attendance_list():
+    """Refresh the Treeview widget with latest attendance."""
+    if not os.path.exists(ATTENDANCE_FILE):
+        return
+
+    df = pd.read_csv(ATTENDANCE_FILE)
+    attendance_list.delete(*attendance_list.get_children())
+
+    for _, row in df.iterrows():
+        attendance_list.insert(
+            "",
+            "end",
+            values=(row["Name"], row["Date"], row["Time"])
+        )
+
+
+def clear_all_attendance():
+    """Clear all attendance records after confirmation."""
+    if not os.path.exists(ATTENDANCE_FILE):
+        return
+
+    ans = messagebox.askyesno(
+        "Confirm",
+        "Are you sure you want to clear ALL attendance records?"
+    )
+    if not ans:
+        return
+
+    pd.DataFrame(columns=["Name", "Date", "Time"]).to_csv(ATTENDANCE_FILE, index=False)
+    update_attendance_list()
+    log("[!] All attendance records cleared.")
+
+
+# --------------------------- Known Faces & Recognition ---------------------------
 
 def load_known_faces():
     """Load embeddings for all known faces from KNOWN_FACES_DIR."""
     global known_embeddings, known_names
 
+    known_embeddings.clear()
+    known_names.clear()
+
     if not os.path.isdir(KNOWN_FACES_DIR):
-        print(f"[!] Folder '{KNOWN_FACES_DIR}' not found. No known faces loaded.")
+        os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+        log(f"[!] Folder '{KNOWN_FACES_DIR}' not found. Created empty folder.")
         return
 
-    files = os.listdir(KNOWN_FACES_DIR)
-    if not files:
-        print(f"[!] Folder '{KNOWN_FACES_DIR}' is empty. No known faces loaded.")
+    files = [
+        f for f in os.listdir(KNOWN_FACES_DIR)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
+
+    total = len(files)
+    if total == 0:
+        log(f"[!] Folder '{KNOWN_FACES_DIR}' is empty. No known faces loaded.")
         return
 
-    for img_file in files:
-        if not img_file.lower().endswith((".jpg", ".jpeg", ".png")):
-            continue
+    status_label.config(text="Status: Loading known faces...")
+    progress_bar["maximum"] = total
+    progress_bar["value"] = 0
+    root.update_idletasks()
 
+    for idx, img_file in enumerate(files, start=1):
         path = os.path.join(KNOWN_FACES_DIR, img_file)
         try:
             reps = DeepFace.represent(
@@ -53,27 +155,56 @@ def load_known_faces():
                 enforce_detection=False
             )
             if not reps:
-                print(f"[!] No embedding returned for {path}")
+                log(f"[!] No embedding returned for {img_file}")
                 continue
 
             embedding = np.array(reps[0]["embedding"], dtype="float32")
             known_embeddings.append(embedding)
-            known_names.append(os.path.splitext(img_file)[0])
-            print(f"[+] Loaded embedding for {img_file}")
+            name = os.path.splitext(img_file)[0]
+            known_names.append(name)
+            log(f"[+] Loaded embedding for {name}")
 
         except Exception as e:
-            print(f"[!] Error processing {path}: {e}")
+            log(f"[!] Error processing {img_file}: {e}")
+
+        progress_bar["value"] = idx
+        root.update_idletasks()
+
+    status_label.config(text="Status: Ready")
+    log(f"[*] Loaded {len(known_embeddings)} known faces.")
+
+
+def add_single_known_face(name: str, img_path: str):
+    """Add one new known face from the given image path."""
+    global known_embeddings, known_names
+
+    try:
+        reps = DeepFace.represent(
+            img_path=img_path,
+            model_name=EMBEDDING_MODEL,
+            enforce_detection=False
+        )
+        if not reps:
+            log(f"[!] No embedding returned for new face: {name}")
+            return
+
+        embedding = np.array(reps[0]["embedding"], dtype="float32")
+        known_embeddings.append(embedding)
+        known_names.append(name)
+        log(f"[+] Registered new student: {name}")
+
+    except Exception as e:
+        log(f"[!] Error registering {name}: {e}")
 
 
 def recognize_face(face_img):
     """Return best matching name for the given face image or None."""
     if not known_embeddings:
-        # No known faces to compare
         return None
 
     try:
         reps = DeepFace.represent(
-            img_path=face_img,  # can be numpy array
+            face_img,  # numpy array
             model_name=EMBEDDING_MODEL,
             enforce_detection=False
         )
@@ -82,7 +213,7 @@ def recognize_face(face_img):
 
         face_embedding = np.array(reps[0]["embedding"], dtype="float32")
     except Exception as e:
-        print(f"[!] DeepFace error on captured face: {e}")
+        log(f"[!] DeepFace error on captured face: {e}")
         return None
 
     best_match = None
@@ -96,42 +227,14 @@ def recognize_face(face_img):
             best_dist = dist
             best_match = known_names[idx]
 
-    # Debug print to tune threshold
-    print(f"Best match: {best_match}, distance: {best_dist:.4f}")
+    log(f"[debug] Best match: {best_match}, distance: {best_dist:.4f}")
 
     if best_dist < DISTANCE_THRESHOLD:
         return best_match
     return None
 
 
-def mark_attendance(name):
-    """Add name to attendance CSV if not already present."""
-    if not name:
-        return
-
-    df = pd.read_csv(ATTENDANCE_FILE)
-
-    if name not in df["Name"].values:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        df.loc[len(df)] = [name, now]
-        df.to_csv(ATTENDANCE_FILE, index=False)
-        update_attendance_list()
-        print(f"[✔] Attendance marked for {name}")
-    else:
-        print(f"[i] {name} already marked present.")
-
-
-def update_attendance_list():
-    """Refresh the Treeview widget with latest attendance."""
-    if not os.path.exists(ATTENDANCE_FILE):
-        return
-
-    df = pd.read_csv(ATTENDANCE_FILE)
-    attendance_list.delete(*attendance_list.get_children())
-
-    for _, row in df.iterrows():
-        attendance_list.insert("", "end", values=(row["Name"], row["Time"]))
-
+# --------------------------- GUI Actions ---------------------------
 
 def upload_photo():
     """Handle class photo upload, face detection and recognition."""
@@ -141,13 +244,10 @@ def upload_photo():
     if not file_path:
         return
 
-    if not known_embeddings:
-        messagebox.showwarning(
-            "No Known Faces",
-            "No known faces loaded! Please add images to the 'known_faces' folder first."
-        )
+    if model is None:
+        messagebox.showerror("Error", "YOLO model is not initialized yet.")
+        return
 
-    # Read image
     img = cv2.imread(file_path)
     if img is None:
         messagebox.showerror("Error", "Failed to read image file.")
@@ -159,14 +259,22 @@ def upload_photo():
         results = model(img_rgb)
     except Exception as e:
         messagebox.showerror("YOLO Error", f"Error while running detection: {e}")
+        log(f"[!] YOLO error: {e}")
         return
+
+    h, w = img_rgb.shape[:2]
+
+    if not known_embeddings:
+        messagebox.showwarning(
+            "No Known Faces",
+            "No known faces loaded. Unknown faces will be shown but not marked."
+        )
 
     for r in results:
         boxes = r.boxes.xyxy.cpu().numpy() if hasattr(r, "boxes") else []
         for box in boxes:
             x1, y1, x2, y2 = map(int, box)
             # Clamp coordinates to image bounds
-            h, w = img_rgb.shape[:2]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
 
@@ -178,10 +286,10 @@ def upload_photo():
 
             if name:
                 mark_attendance(name)
-                color = (0, 255, 0)  # Green for known
+                color = (0, 255, 0)  # green
                 text = name
             else:
-                color = (255, 0, 0)  # Red for unknown
+                color = (255, 0, 0)  # red
                 text = "Unknown"
 
             cv2.rectangle(img_rgb, (x1, y1), (x2, y2), color, 2)
@@ -203,50 +311,167 @@ def upload_photo():
     photo_label.configure(image=imgtk)
 
 
-# --------------------------- Init Models & Data ---------------------------
+def register_new_student():
+    """Register a new student's face via GUI."""
+    # Ask for student name
+    name = simpledialog.askstring("Student Name", "Enter student name:")
+    if not name:
+        return
 
-print("[*] Initializing YOLO model...")
-model = YOLO(YOLO_MODEL_PATH)
+    # Ask for photo
+    file_path = filedialog.askopenfilename(
+        title="Select student face image",
+        filetypes=[("Image Files", "*.jpg *.jpeg *.png")]
+    )
+    if not file_path:
+        return
 
-print("[*] Initializing attendance file...")
-init_attendance_file()
+    # Save a copy in KNOWN_FACES_DIR
+    os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+    ext = os.path.splitext(file_path)[1].lower()
+    save_path = os.path.join(KNOWN_FACES_DIR, name + ext)
 
-print("[*] Loading known faces...")
-load_known_faces()
+    try:
+        img = Image.open(file_path)
+        img.save(save_path)
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to save image: {e}")
+        log(f"[!] Error saving new student image: {e}")
+        return
 
-# --------------------------- GUI ---------------------------
+    # Create embedding and add to memory
+    add_single_known_face(name, save_path)
+    messagebox.showinfo("Success", f"Registered new student: {name}")
 
-root = tk.Tk()
-root.title("Class Photo Attendance System")
-root.geometry("800x700")
 
-upload_btn = tk.Button(
-    root,
-    text="Upload Class Photo",
-    command=upload_photo,
-    font=("Arial", 14)
-)
-upload_btn.pack(pady=10)
+# --------------------------- Initialization Sequence ---------------------------
 
-photo_label = tk.Label(root)
-photo_label.pack(pady=10)
+def init_system():
+    """Initialize model, attendance file, and known faces (called after GUI build)."""
+    global model
 
-attendance_frame = tk.Frame(root)
-attendance_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    # Disable buttons during init
+    upload_btn.config(state=tk.DISABLED)
+    register_btn.config(state=tk.DISABLED)
+    clear_btn.config(state=tk.DISABLED)
 
-columns = ("Name", "Time")
-attendance_list = ttk.Treeview(attendance_frame, columns=columns, show="headings")
+    status_label.config(text="Status: Initializing YOLO model...")
+    root.update_idletasks()
+    log("[*] Initializing YOLO model...")
 
-for col in columns:
-    attendance_list.heading(col, text=col)
-    attendance_list.column(col, width=200, anchor="center")
+    try:
+        model = YOLO(YOLO_MODEL_PATH)
+    except Exception as e:
+        messagebox.showerror("YOLO Error", f"Failed to load YOLO model: {e}")
+        log(f"[!] Failed to load YOLO model: {e}")
+        status_label.config(text="Status: Error loading YOLO")
+        return
 
-# Add a scrollbar for the Treeview
-scrollbar = ttk.Scrollbar(attendance_frame, orient="vertical", command=attendance_list.yview)
-attendance_list.configure(yscrollcommand=scrollbar.set)
-attendance_list.pack(side="left", fill="both", expand=True)
-scrollbar.pack(side="right", fill="y")
+    log("[*] YOLO model loaded.")
 
-update_attendance_list()
+    log("[*] Initializing attendance file...")
+    init_attendance_file()
+    update_attendance_list()
 
-root.mainloop()
+    log("[*] Loading known faces...")
+    load_known_faces()
+
+    # Enable buttons after init
+    upload_btn.config(state=tk.NORMAL)
+    register_btn.config(state=tk.NORMAL)
+    clear_btn.config(state=tk.NORMAL)
+
+    status_label.config(text="Status: Ready")
+    log("[*] System initialized. You can now upload class photos.")
+
+
+# --------------------------- GUI Setup ---------------------------
+
+def build_gui():
+    global root, upload_btn, register_btn, clear_btn
+    global status_label, progress_bar, log_text, attendance_list, photo_label
+
+    root = tk.Tk()
+    root.title("Class Photo Attendance System")
+    root.geometry("900x800")
+
+    # Top Buttons Frame
+    top_frame = tk.Frame(root)
+    top_frame.pack(pady=10)
+
+    upload_btn = tk.Button(
+        top_frame,
+        text="Upload Class Photo",
+        command=upload_photo,
+        font=("Arial", 12),
+        state=tk.DISABLED  # enabled after init
+    )
+    upload_btn.grid(row=0, column=0, padx=5)
+
+    register_btn = tk.Button(
+        top_frame,
+        text="Register New Student",
+        command=register_new_student,
+        font=("Arial", 12),
+        state=tk.DISABLED
+    )
+    register_btn.grid(row=0, column=1, padx=5)
+
+    clear_btn = tk.Button(
+        top_frame,
+        text="Clear All Attendance",
+        command=clear_all_attendance,
+        font=("Arial", 12),
+        state=tk.DISABLED
+    )
+    clear_btn.grid(row=0, column=2, padx=5)
+
+    # Photo display
+    photo_label = tk.Label(root)
+    photo_label.pack(pady=10)
+
+    # Attendance Table
+    attendance_frame = tk.LabelFrame(root, text="Attendance")
+    attendance_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+    columns = ("Name", "Date", "Time")
+    attendance_list = ttk.Treeview(attendance_frame, columns=columns, show="headings")
+
+    for col in columns:
+        attendance_list.heading(col, text=col)
+        attendance_list.column(col, width=200, anchor="center")
+
+    scrollbar = ttk.Scrollbar(attendance_frame, orient="vertical", command=attendance_list.yview)
+    attendance_list.configure(yscrollcommand=scrollbar.set)
+    attendance_list.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    # Status bar + progress bar
+    status_frame = tk.Frame(root)
+    status_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+    status_label = tk.Label(status_frame, text="Status: Initializing...", anchor="w")
+    status_label.pack(side="left", fill="x", expand=True)
+
+    progress_bar = ttk.Progressbar(status_frame, orient="horizontal", mode="determinate")
+    progress_bar.pack(side="right", fill="x", expand=False, padx=(10, 0))
+
+    # Log area
+    log_frame = tk.LabelFrame(root, text="Log")
+    log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+    global log_text
+    log_text = scrolledtext.ScrolledText(log_frame, height=8)
+    log_text.pack(fill="both", expand=True)
+
+    # After GUI is built, start initialization
+    root.after(100, init_system)
+
+    return root
+
+
+# --------------------------- Main ---------------------------
+
+if __name__ == "__main__":
+    app = build_gui()
+    app.mainloop()
