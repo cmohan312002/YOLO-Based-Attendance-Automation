@@ -6,7 +6,7 @@ from ultralytics import YOLO
 from deepface import DeepFace
 import numpy as np
 import os
-import pandas as pd
+import pandas as pd 
 from datetime import datetime
 
 # --------------------------- Configuration ---------------------------
