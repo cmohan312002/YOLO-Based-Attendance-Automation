@@ -10,19 +10,17 @@ import os
 import pandas as pd
 from datetime import datetime
 
-# --------------------------- Configuration ---------------------------
+
 KNOWN_FACES_DIR = "known_faces"
-YOLO_MODEL_PATH = "yolov8s-face-lindevs.pt"  # change if your file name is different
+YOLO_MODEL_PATH = "yolov8s-face-lindevs.pt"  
 ATTENDANCE_FILE = "attendance.csv"
 EMBEDDING_MODEL = "Facenet"
-DISTANCE_THRESHOLD = 10.5 # tune this based on your tests (0.8–1.2 usually)
+DISTANCE_THRESHOLD = 15 
 
-# Globals
 model = None
 known_embeddings = []
 known_names = []
 
-# GUI globals (will be set later)
 root = None
 upload_btn = None
 register_btn = None
@@ -34,7 +32,7 @@ attendance_list = None
 photo_label = None
 
 
-# --------------------------- Utility: Logging ---------------------------
+
 
 def log(msg: str):
     """Log message to the text area and console."""
@@ -44,7 +42,7 @@ def log(msg: str):
         log_text.see(tk.END)
 
 
-# --------------------------- Attendance File ---------------------------
+
 
 def init_attendance_file():
     """Create CSV file if it doesn't exist or is empty, with Name/Date/Time columns."""
@@ -57,7 +55,7 @@ def init_attendance_file():
     else:
         df = pd.read_csv(ATTENDANCE_FILE)
 
-        # If columns don't match, completely reset file
+        
         if list(df.columns) != expected_cols:
             df = pd.DataFrame(columns=expected_cols)
             df.to_csv(ATTENDANCE_FILE, index=False)
@@ -71,7 +69,6 @@ def mark_attendance(name: str):
     df = pd.read_csv(ATTENDANCE_FILE)
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Check if this name is already marked today
     already_today = ((df["Name"] == name) & (df["Date"] == today)).any()
     if already_today:
         log(f"[i] {name} is already marked present today ({today}).")
@@ -286,10 +283,10 @@ def upload_photo():
 
             if name:
                 mark_attendance(name)
-                color = (0, 255, 0)  # green
+                color = (0, 255, 0)  
                 text = name
             else:
-                color = (255, 0, 0)  # red
+                color = (255, 0, 0)  
                 text = "Unknown"
 
             cv2.rectangle(img_rgb, (x1, y1), (x2, y2), color, 2)
@@ -303,7 +300,6 @@ def upload_photo():
                 2,
             )
 
-    # Display image in GUI
     img_pil = Image.fromarray(img_rgb)
     img_pil = img_pil.resize((600, 400))
     imgtk = ImageTk.PhotoImage(img_pil)
@@ -313,12 +309,10 @@ def upload_photo():
 
 def register_new_student():
     """Register a new student's face via GUI."""
-    # Ask for student name
     name = simpledialog.askstring("Student Name", "Enter student name:")
     if not name:
         return
 
-    # Ask for photo
     file_path = filedialog.askopenfilename(
         title="Select student face image",
         filetypes=[("Image Files", "*.jpg *.jpeg *.png")]
@@ -326,7 +320,6 @@ def register_new_student():
     if not file_path:
         return
 
-    # Save a copy in KNOWN_FACES_DIR
     os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
     ext = os.path.splitext(file_path)[1].lower()
     save_path = os.path.join(KNOWN_FACES_DIR, name + ext)
@@ -339,15 +332,12 @@ def register_new_student():
         log(f"[!] Error saving new student image: {e}")
         return
 
-    # Create embedding and add to memory
     add_single_known_face(name, save_path)
     messagebox.showinfo("Success", f"Registered new student: {name}")
 
 
-# --------------------------- Initialization Sequence ---------------------------
 
 def init_system():
-    """Initialize model, attendance file, and known faces (called after GUI build)."""
     global model
 
     # Disable buttons during init
@@ -376,7 +366,6 @@ def init_system():
     log("[*] Loading known faces...")
     load_known_faces()
 
-    # Enable buttons after init
     upload_btn.config(state=tk.NORMAL)
     register_btn.config(state=tk.NORMAL)
     clear_btn.config(state=tk.NORMAL)
@@ -385,7 +374,6 @@ def init_system():
     log("[*] System initialized. You can now upload class photos.")
 
 
-# --------------------------- GUI Setup ---------------------------
 
 def build_gui():
     global root, upload_btn, register_btn, clear_btn
@@ -395,7 +383,6 @@ def build_gui():
     root.title("Class Photo Attendance System")
     root.geometry("900x800")
 
-    # Top Buttons Frame
     top_frame = tk.Frame(root)
     top_frame.pack(pady=10)
 
@@ -404,7 +391,7 @@ def build_gui():
         text="Upload Class Photo",
         command=upload_photo,
         font=("Arial", 12),
-        state=tk.DISABLED  # enabled after init
+        state=tk.DISABLED  
     )
     upload_btn.grid(row=0, column=0, padx=5)
 
@@ -426,11 +413,11 @@ def build_gui():
     )
     clear_btn.grid(row=0, column=2, padx=5)
 
-    # Photo display
+
     photo_label = tk.Label(root)
     photo_label.pack(pady=10)
 
-    # Attendance Table
+
     attendance_frame = tk.LabelFrame(root, text="Attendance")
     attendance_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -446,7 +433,7 @@ def build_gui():
     attendance_list.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
-    # Status bar + progress bar
+
     status_frame = tk.Frame(root)
     status_frame.pack(fill="x", padx=10, pady=(0, 5))
 
@@ -456,7 +443,7 @@ def build_gui():
     progress_bar = ttk.Progressbar(status_frame, orient="horizontal", mode="determinate")
     progress_bar.pack(side="right", fill="x", expand=False, padx=(10, 0))
 
-    # Log area
+
     log_frame = tk.LabelFrame(root, text="Log")
     log_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
@@ -464,13 +451,11 @@ def build_gui():
     log_text = scrolledtext.ScrolledText(log_frame, height=8)
     log_text.pack(fill="both", expand=True)
 
-    # After GUI is built, start initialization
     root.after(100, init_system)
 
     return root
 
 
-# --------------------------- Main ---------------------------
 
 if __name__ == "__main__":
     app = build_gui()
